@@ -5,7 +5,7 @@ import { Textarea } from '../ui/Textarea';
 import { Input } from '../ui/Input';
 import { Upload, Play, Copy, Check, Settings, Send, Loader2 } from 'lucide-react';
 import { useAppStore } from '../../lib/store';
-import { sendChat, runDeepResearch, type Message } from '../../lib/openai';
+import { sendChat, runDeepResearch, processFilesForResearch, type Message } from '../../lib/openai';
 import { extractTextFromPDF } from '../../lib/file-processing';
 import { cn } from '../../lib/utils';
 
@@ -25,9 +25,14 @@ Do not output [READY] unless you are absolutely sure you have what you need.
 interface ResearchFormProps {
     initialPrompt?: string;
     initialContext?: string;
+    initialVectorStoreId?: string | null;
 }
 
-export const ResearchForm: React.FC<ResearchFormProps> = ({ initialPrompt = '', initialContext = '' }) => {
+export const ResearchForm: React.FC<ResearchFormProps> = ({ 
+    initialPrompt = '', 
+    initialContext = '',
+    initialVectorStoreId = null
+}) => {
     const { apiKey, setApiKey } = useAppStore();
     const [input, setInput] = useState(initialPrompt);
     const [messages, setMessages] = useState<Message[]>([]);
@@ -35,6 +40,8 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({ initialPrompt = '', 
     const [researchResult, setResearchResult] = useState('');
     const [contextFiles, setContextFiles] = useState<File[]>([]);
     const [contextText, setContextText] = useState(initialContext);
+    const [vectorStoreIds, setVectorStoreIds] = useState<string[]>(initialVectorStoreId ? [initialVectorStoreId] : []);
+    const [isProcessingFiles, setIsProcessingFiles] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [copied, setCopied] = useState(false);
     const [mode, setMode] = useState<'chat' | 'research'>('chat');
@@ -53,19 +60,52 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({ initialPrompt = '', 
 
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files.length > 0) {
+            if (!apiKey) {
+                setError('Please set your OpenAI API Key in settings first.');
+                setShowSettings(true);
+                return;
+            }
+
             const files = Array.from(e.target.files);
             setContextFiles(prev => [...prev, ...files]);
+            setIsProcessingFiles(true);
+            setError(null);
 
-            for (const file of files) {
-                if (file.type === 'application/pdf') {
-                    try {
-                        const text = await extractTextFromPDF(file);
-                        setContextText(prev => prev + `\n\n--- File: ${file.name} ---\n${text}`);
-                    } catch (error) {
-                        console.error(`Failed to parse ${file.name}`, error);
-                        setError(`Failed to parse ${file.name}`);
+            try {
+                // Process files and create vector store
+                console.log('Starting file upload to vector store...');
+                const vsId = await processFilesForResearch(apiKey, files);
+                if (vsId) {
+                    console.log('✓ Vector store created:', vsId);
+                    setVectorStoreIds(prev => {
+                        // Keep max 2 vector stores (API limit)
+                        const updated = [...prev, vsId];
+                        return updated.slice(-2);
+                    });
+                    // Show success message
+                    setError(null);
+                } else {
+                    throw new Error('Failed to create vector store');
+                }
+
+                // Also extract text for display/fallback (optional, doesn't block upload)
+                for (const file of files) {
+                    if (file.type === 'application/pdf') {
+                        try {
+                            const text = await extractTextFromPDF(file);
+                            setContextText(prev => prev + `\n\n--- File: ${file.name} ---\n${text}`);
+                            console.log(`✓ Extracted text from ${file.name}`);
+                        } catch (error) {
+                            console.warn(`⚠ Failed to extract text from ${file.name} (file still uploaded to vector store):`, error);
+                            // Don't set error here, vector store upload succeeded
+                        }
                     }
                 }
+            } catch (error: any) {
+                console.error('File upload error:', error);
+                setError(`Failed to upload files: ${error.message}`);
+            } finally {
+                setIsProcessingFiles(false);
             }
         }
     };
@@ -130,9 +170,13 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({ initialPrompt = '', 
                 .map(m => `[${m.role.toUpperCase()}]: ${m.content}`)
                 .join('\n\n');
 
+            console.log('Starting deep research with vector stores:', vectorStoreIds);
+            console.log('Research prompt:', researchPrompt.substring(0, 200) + '...');
+
             const data = await runDeepResearch({
                 apiKey,
-                prompt: researchPrompt
+                prompt: researchPrompt,
+                vectorStoreIds: vectorStoreIds.length > 0 ? vectorStoreIds : undefined
             });
 
             // Parse the response to find the final message
@@ -205,9 +249,15 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({ initialPrompt = '', 
                                 accept=".pdf,.txt"
                                 onChange={handleFileUpload}
                             />
-                            <Button variant="outline" size="sm" className="gap-2" onClick={() => fileInputRef.current?.click()}>
+                            <Button 
+                                variant="outline" 
+                                size="sm" 
+                                className="gap-2" 
+                                onClick={() => fileInputRef.current?.click()}
+                                disabled={isProcessingFiles}
+                            >
                                 <Upload className="w-4 h-4" />
-                                Context ({contextFiles.length})
+                                {isProcessingFiles ? 'Uploading...' : `Context (${contextFiles.length}${vectorStoreIds.length > 0 ? ' ✓' : ''})`}
                             </Button>
                             <Button variant="outline" size="sm" className="gap-2" onClick={() => setShowSettings(!showSettings)}>
                                 <Settings className="w-4 h-4" />
