@@ -212,6 +212,83 @@ export async function processFilesForResearch(
     }
 }
 
+/**
+ * Polls for the result of a background deep research request
+ */
+async function pollForResult(apiKey: string, responseId: string, maxWaitTime: number = 600000): Promise<any> {
+    const startTime = Date.now();
+    const pollInterval = 3000; // Check every 3 seconds
+    
+    while (Date.now() - startTime < maxWaitTime) {
+        try {
+            const response = await fetch(`https://api.openai.com/v1/responses/${responseId}`, {
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Failed to poll response: ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            console.log(`Polling attempt - Status: ${data.status}, Has output: ${!!data.output}, Has output_text: ${!!data.output_text}`);
+            
+            // Check if the response is complete - check for output first
+            if (data.output && Array.isArray(data.output) && data.output.length > 0) {
+                console.log('Found output array with', data.output.length, 'items');
+                return data;
+            }
+            
+            if (data.output_text) {
+                console.log('Found output_text');
+                return data;
+            }
+            
+            // Check status
+            if (data.status === 'completed') {
+                console.log('Status is completed');
+                // Even if status is completed, check if we have output
+                if (!data.output && !data.output_text) {
+                    // Wait a bit more in case output is still being generated
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    continue;
+                }
+                return data;
+            }
+            
+            // If it's still processing, wait and try again
+            if (data.status === 'processing' || data.status === 'pending' || !data.status) {
+                console.log('Still processing, waiting...');
+                await new Promise(resolve => setTimeout(resolve, pollInterval));
+                continue;
+            }
+            
+            // If there's an error status
+            if (data.status === 'failed' || data.error) {
+                throw new Error(data.error?.message || 'Deep research failed');
+            }
+            
+            // Default: wait and try again
+            console.log('Unknown status, waiting and retrying...');
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
+            continue;
+            
+        } catch (error: any) {
+            // If it's a 404, the response might not be ready yet
+            if (error.message?.includes('404') || error.message?.includes('Failed to poll')) {
+                console.log('404 or fetch error, response not ready yet, waiting...');
+                await new Promise(resolve => setTimeout(resolve, pollInterval));
+                continue;
+            }
+            console.error('Polling error:', error);
+            throw error;
+        }
+    }
+    
+    throw new Error('Deep research timed out after 10 minutes');
+}
+
 export async function runDeepResearch(params: { 
     apiKey: string, 
     prompt: string,
@@ -260,7 +337,22 @@ export async function runDeepResearch(params: {
         }
 
         const data = await response.json();
+        console.log('Initial deep research response:', data);
 
+        // If background mode, poll for the result
+        if (data.id) {
+            console.log('Polling for result with ID:', data.id);
+            return await pollForResult(params.apiKey, data.id);
+        }
+
+        // If we already have output, return it
+        if (data.output || data.output_text) {
+            console.log('Response already contains output');
+            return data;
+        }
+
+        // If no ID and no output, this might be an error or unexpected response
+        console.warn('Unexpected response structure:', data);
         return data;
 
     } catch (error: any) {

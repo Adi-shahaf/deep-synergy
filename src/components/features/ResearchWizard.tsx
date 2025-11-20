@@ -4,7 +4,7 @@ import { useAppStore } from '../../lib/store';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Textarea } from '../ui/Textarea';
-import { ArrowLeft, ArrowRight, Upload, FileText } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Upload, FileText, Loader2 } from 'lucide-react';
 import { extractTextFromPDF } from '../../lib/file-processing';
 import { processFilesForResearch } from '../../lib/openai';
 import { cn } from '../../lib/utils';
@@ -85,6 +85,7 @@ export const ResearchWizard: React.FC = () => {
                     initialPrompt={prompt} 
                     initialContext={contextText}
                     initialVectorStoreId={vectorStoreId}
+                    autoSend={true}
                 />
             </div>
         );
@@ -159,8 +160,17 @@ export const ResearchWizard: React.FC = () => {
             </Card>
 
             <div className="flex justify-end">
-                <Button size="lg" onClick={() => setStep(2)} className="gap-2">
-                    Next: Start Clarification <ArrowRight className="w-4 h-4" />
+                <Button 
+                    size="lg" 
+                    onClick={() => setStep(2)} 
+                    className="gap-2"
+                    disabled={isProcessingFiles || (contextFiles.length > 0 && !vectorStoreId && !error)}
+                >
+                    {isProcessingFiles ? (
+                        <>Uploading files... <Loader2 className="w-4 h-4 animate-spin" /></>
+                    ) : (
+                        <>Next: Start Clarification <ArrowRight className="w-4 h-4" /></>
+                    )}
                 </Button>
             </div>
         </div>

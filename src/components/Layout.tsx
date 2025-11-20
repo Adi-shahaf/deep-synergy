@@ -33,11 +33,11 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                         </div>
 
                         <nav className="flex gap-4">
-                            <NavLink to="/" className={({ isActive }) => cn("text-sm font-medium transition-colors hover:text-primary", isActive ? "text-primary" : "text-muted-foreground")}>
-                                Chat
-                            </NavLink>
                             <NavLink to="/templates" className={({ isActive }) => cn("text-sm font-medium transition-colors hover:text-primary", isActive ? "text-primary" : "text-muted-foreground")}>
                                 Templates
+                            </NavLink>
+                            <NavLink to="/" className={({ isActive }) => cn("text-sm font-medium transition-colors hover:text-primary", isActive ? "text-primary" : "text-muted-foreground")}>
+                                Chat
                             </NavLink>
                         </nav>
                     </div>

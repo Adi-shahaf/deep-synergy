@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Card, CardContent } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Textarea } from '../ui/Textarea';
@@ -26,15 +26,17 @@ interface ResearchFormProps {
     initialPrompt?: string;
     initialContext?: string;
     initialVectorStoreId?: string | null;
+    autoSend?: boolean;
 }
 
 export const ResearchForm: React.FC<ResearchFormProps> = ({ 
     initialPrompt = '', 
     initialContext = '',
-    initialVectorStoreId = null
+    initialVectorStoreId = null,
+    autoSend = false
 }) => {
     const { apiKey, setApiKey } = useAppStore();
-    const [input, setInput] = useState(initialPrompt);
+    const [input, setInput] = useState('');
     const [messages, setMessages] = useState<Message[]>([]);
     const [isProcessing, setIsProcessing] = useState(false);
     const [researchResult, setResearchResult] = useState('');
@@ -50,9 +52,137 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
     const fileInputRef = useRef<HTMLInputElement>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
 
-    // Auto-send initial prompt if provided (optional, maybe just pre-fill)
-    // For wizard flow, we might want to let user send it manually or auto-send.
-    // Let's just pre-fill for now.
+    // Define startDeepResearch first so it can be used in sendMessage
+    const startDeepResearch = useCallback(async (history: Message[]) => {
+        setIsProcessing(true);
+        try {
+            // Consolidate history into a single prompt
+            const researchPrompt = history
+                .filter(m => m.role !== 'system')
+                .map(m => `[${m.role.toUpperCase()}]: ${m.content}`)
+                .join('\n\n');
+
+            console.log('Starting deep research with vector stores:', vectorStoreIds);
+            console.log('Research prompt:', researchPrompt.substring(0, 200) + '...');
+
+            const data = await runDeepResearch({
+                apiKey,
+                prompt: researchPrompt,
+                vectorStoreIds: vectorStoreIds.length > 0 ? vectorStoreIds : undefined
+            });
+
+            console.log('Deep research completed, parsing response:', data);
+
+            // Parse the response to find the final message
+            let finalText = '';
+            if (data.output && Array.isArray(data.output)) {
+                const messageItem = data.output.find((item: any) => item.type === 'message');
+                if (messageItem && messageItem.content) {
+                    if (Array.isArray(messageItem.content)) {
+                        finalText = messageItem.content
+                            .map((part: any) => part.text || part.output_text || '')
+                            .join('');
+                    } else if (typeof messageItem.content === 'string') {
+                        finalText = messageItem.content;
+                    }
+                }
+                
+                // If no message item found, try to get text from any output item
+                if (!finalText) {
+                    for (const item of data.output) {
+                        if (item.text) {
+                            finalText += item.text + '\n\n';
+                        } else if (item.content && typeof item.content === 'string') {
+                            finalText += item.content + '\n\n';
+                        }
+                    }
+                }
+            } else if (data.output_text) {
+                finalText = data.output_text;
+            } else if (data.text) {
+                finalText = data.text;
+            } else {
+                console.warn('Unexpected response structure, showing raw data:', data);
+                finalText = JSON.stringify(data, null, 2);
+            }
+
+            if (!finalText || finalText.trim() === '') {
+                throw new Error('Research completed but no output was generated. Please try again.');
+            }
+
+            setResearchResult(finalText);
+        } catch (err: any) {
+            console.error('Deep research error:', err);
+            setError(err.message || 'Failed to generate research report. Please try again.');
+            setResearchResult(''); // Clear any partial results
+        } finally {
+            setIsProcessing(false);
+        }
+    }, [apiKey, vectorStoreIds]);
+
+    // Extract send logic to a reusable function
+    const sendMessage = useCallback(async (messageContent: string, isFirstMessage: boolean = false) => {
+        if (!apiKey) {
+            setError('Please set your OpenAI API Key in settings first.');
+            setShowSettings(true);
+            return;
+        }
+        if (!messageContent.trim()) return;
+
+        const userMsg: Message = { role: 'user', content: messageContent };
+
+        // If it's the first message, append context
+        if (isFirstMessage && contextText) {
+            userMsg.content += `\n\n[CONTEXT FILES ATTACHED]:\n${contextText}`;
+        }
+
+        const newMessages = [...messages, userMsg];
+        setMessages(newMessages);
+        setInput(''); // Always clear input after sending
+        setIsProcessing(true);
+        setError(null);
+
+        try {
+            const fullHistory: Message[] = [
+                { role: 'system', content: SYSTEM_PROMPT },
+                ...newMessages
+            ];
+
+            const response = await sendChat({
+                apiKey,
+                messages: fullHistory,
+            });
+
+            if (response.includes('[READY]')) {
+                setMode('research');
+                const cleanResponse = response.replace('[READY]', '').trim();
+                setMessages(prev => [...prev, { role: 'assistant', content: cleanResponse }]);
+                await startDeepResearch(fullHistory);
+            } else {
+                setMessages(prev => [...prev, { role: 'assistant', content: response }]);
+            }
+        } catch (err: any) {
+            console.error(err);
+            setError(err.message || 'An error occurred.');
+        } finally {
+            setIsProcessing(false);
+        }
+    }, [apiKey, messages, contextText, autoSend, startDeepResearch]);
+
+    // Auto-send initial prompt if autoSend is true
+    const hasAutoSent = useRef(false);
+    useEffect(() => {
+        if (autoSend && initialPrompt && !isProcessing && messages.length === 0 && apiKey && !hasAutoSent.current) {
+            // Small delay to ensure component is fully mounted and vector stores are ready
+            const timer = setTimeout(() => {
+                if (initialPrompt.trim() && !hasAutoSent.current) {
+                    hasAutoSent.current = true;
+                    sendMessage(initialPrompt, true);
+                }
+            }, 500);
+            return () => clearTimeout(timer);
+        }
+    }, [autoSend, initialPrompt, apiKey, isProcessing, messages.length, sendMessage]);
 
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -111,98 +241,7 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
     };
 
     const handleSendMessage = async () => {
-        if (!apiKey) {
-            setError('Please set your OpenAI API Key in settings first.');
-            setShowSettings(true);
-            return;
-        }
-        if (!input.trim()) return;
-
-        const userMsg: Message = { role: 'user', content: input };
-
-        // If it's the first message, append context
-        if (messages.length === 0 && contextText) {
-            userMsg.content += `\n\n[CONTEXT FILES ATTACHED]:\n${contextText}`;
-        }
-
-        const newMessages = [...messages, userMsg];
-        setMessages(newMessages);
-        setInput('');
-        setIsProcessing(true);
-        setError(null);
-
-        try {
-            // Include system prompt if it's the start
-            const fullHistory: Message[] = [
-                { role: 'system', content: SYSTEM_PROMPT },
-                ...newMessages
-            ];
-
-            const response = await sendChat({
-                apiKey,
-                messages: fullHistory,
-            });
-
-            if (response.includes('[READY]')) {
-                setMode('research');
-                const cleanResponse = response.replace('[READY]', '').trim();
-                setMessages(prev => [...prev, { role: 'assistant', content: cleanResponse }]);
-
-                // Trigger Deep Research Stream
-                await startDeepResearch(fullHistory);
-            } else {
-                setMessages(prev => [...prev, { role: 'assistant', content: response }]);
-            }
-        } catch (err: any) {
-            console.error(err);
-            setError(err.message || 'An error occurred.');
-        } finally {
-            setIsProcessing(false);
-        }
-    };
-
-    const startDeepResearch = async (history: Message[]) => {
-        setIsProcessing(true);
-        try {
-            // Consolidate history into a single prompt
-            const researchPrompt = history
-                .filter(m => m.role !== 'system')
-                .map(m => `[${m.role.toUpperCase()}]: ${m.content}`)
-                .join('\n\n');
-
-            console.log('Starting deep research with vector stores:', vectorStoreIds);
-            console.log('Research prompt:', researchPrompt.substring(0, 200) + '...');
-
-            const data = await runDeepResearch({
-                apiKey,
-                prompt: researchPrompt,
-                vectorStoreIds: vectorStoreIds.length > 0 ? vectorStoreIds : undefined
-            });
-
-            // Parse the response to find the final message
-            // Assuming data.output is an array of items
-            let finalText = '';
-            if (data.output) {
-                const messageItem = data.output.find((item: any) => item.type === 'message');
-                if (messageItem && messageItem.content) {
-                    // content is an array of parts
-                    finalText = messageItem.content
-                        .map((part: any) => part.text || '')
-                        .join('');
-                }
-            } else if (data.output_text) {
-                // Some API versions might return this directly
-                finalText = data.output_text;
-            } else {
-                finalText = JSON.stringify(data, null, 2); // Fallback debug
-            }
-
-            setResearchResult(finalText);
-        } catch (err: any) {
-            setError(err.message || 'Failed to generate research report.');
-        } finally {
-            setIsProcessing(false);
-        }
+        await sendMessage(input, messages.length === 0);
     };
 
     const copyToClipboard = () => {
@@ -236,32 +275,8 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
                 <CardContent className="flex-1 p-0 flex flex-col h-full">
                     {/* Header */}
                     <div className="p-4 border-b border-white/5 flex items-center justify-between bg-black/20">
-                        <h2 className="text-lg font-semibold flex items-center gap-2">
-                            {mode === 'chat' ? 'Research Assistant' : 'Deep Research Report'}
+                        <div className="flex items-center gap-2">
                             {isProcessing && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
-                        </h2>
-                        <div className="flex gap-2">
-                            <input
-                                type="file"
-                                ref={fileInputRef}
-                                className="hidden"
-                                multiple
-                                accept=".pdf,.txt"
-                                onChange={handleFileUpload}
-                            />
-                            <Button 
-                                variant="outline" 
-                                size="sm" 
-                                className="gap-2" 
-                                onClick={() => fileInputRef.current?.click()}
-                                disabled={isProcessingFiles}
-                            >
-                                <Upload className="w-4 h-4" />
-                                {isProcessingFiles ? 'Uploading...' : `Context (${contextFiles.length}${vectorStoreIds.length > 0 ? ' ✓' : ''})`}
-                            </Button>
-                            <Button variant="outline" size="sm" className="gap-2" onClick={() => setShowSettings(!showSettings)}>
-                                <Settings className="w-4 h-4" />
-                            </Button>
                         </div>
                     </div>
 
@@ -297,8 +312,20 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
                             </>
                         ) : (
                             <div className="prose prose-invert prose-sm max-w-none whitespace-pre-wrap font-mono text-sm">
-                                {researchResult}
-                                <div ref={chatEndRef} />
+                                {isProcessing ? (
+                                    <div className="flex flex-col items-center justify-center h-full py-12">
+                                        <Loader2 className="w-8 h-8 animate-spin text-primary mb-4" />
+                                        <p className="text-muted-foreground">Deep Research in progress...</p>
+                                        <p className="text-xs text-muted-foreground mt-2">This may take several minutes</p>
+                                    </div>
+                                ) : researchResult ? (
+                                    <>
+                                        {researchResult}
+                                        <div ref={chatEndRef} />
+                                    </>
+                                ) : (
+                                    <div className="text-muted-foreground">No research result available.</div>
+                                )}
                             </div>
                         )}
                     </div>
@@ -307,13 +334,18 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
                     <div className="p-4 border-t border-white/5 bg-black/20">
                         {mode === 'research' ? (
                             <div className="flex justify-between items-center">
-                                <span className="text-xs text-muted-foreground animate-pulse">
-                                    {isProcessing ? 'Deep Research in progress (this may take several minutes)...' : 'Deep Research Report complete.'}
-                                </span>
-                                <Button variant="secondary" size="sm" onClick={copyToClipboard}>
-                                    {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-                                    Copy Report
-                                </Button>
+                                <div className="flex items-center gap-2">
+                                    {isProcessing && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
+                                    <span className="text-xs text-muted-foreground">
+                                        {isProcessing ? 'Deep Research in progress (this may take several minutes)...' : 'Deep Research Report complete.'}
+                                    </span>
+                                </div>
+                                {!isProcessing && researchResult && (
+                                    <Button variant="secondary" size="sm" onClick={copyToClipboard}>
+                                        {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+                                        Copy Report
+                                    </Button>
+                                )}
                             </div>
                         ) : (
                             <div className="flex gap-2">
