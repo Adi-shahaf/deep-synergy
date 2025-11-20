@@ -3,7 +3,7 @@ import { Card, CardContent } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Textarea } from '../ui/Textarea';
 import { Input } from '../ui/Input';
-import { Upload, Play, Save, Copy, Check, Settings, Send, Loader2 } from 'lucide-react';
+import { Upload, Play, Copy, Check, Settings, Send, Loader2 } from 'lucide-react';
 import { useAppStore } from '../../lib/store';
 import { sendChat, runDeepResearch, type Message } from '../../lib/openai';
 import { extractTextFromPDF } from '../../lib/file-processing';
@@ -22,22 +22,30 @@ PROTOCOL:
 Do not output [READY] unless you are absolutely sure you have what you need.
 `;
 
-export const ResearchForm: React.FC = () => {
-    const { apiKey, setApiKey, addTemplate, templates } = useAppStore();
-    const [input, setInput] = useState('');
+interface ResearchFormProps {
+    initialPrompt?: string;
+    initialContext?: string;
+}
+
+export const ResearchForm: React.FC<ResearchFormProps> = ({ initialPrompt = '', initialContext = '' }) => {
+    const { apiKey, setApiKey } = useAppStore();
+    const [input, setInput] = useState(initialPrompt);
     const [messages, setMessages] = useState<Message[]>([]);
     const [isProcessing, setIsProcessing] = useState(false);
     const [researchResult, setResearchResult] = useState('');
     const [contextFiles, setContextFiles] = useState<File[]>([]);
-    const [contextText, setContextText] = useState('');
+    const [contextText, setContextText] = useState(initialContext);
     const [showSettings, setShowSettings] = useState(false);
-    const [templateName, setTemplateName] = useState('');
     const [copied, setCopied] = useState(false);
     const [mode, setMode] = useState<'chat' | 'research'>('chat');
     const [error, setError] = useState<string | null>(null);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
+
+    // Auto-send initial prompt if provided (optional, maybe just pre-fill)
+    // For wizard flow, we might want to let user send it manually or auto-send.
+    // Let's just pre-fill for now.
 
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -153,27 +161,6 @@ export const ResearchForm: React.FC = () => {
         }
     };
 
-    const handleSaveTemplate = () => {
-        if (!templateName) return;
-        // Save the last user input as the prompt template
-        const lastUserMessage = [...messages].reverse().find(m => m.role === 'user');
-        if (!lastUserMessage) {
-            alert('No prompt to save!');
-            return;
-        }
-
-        addTemplate({
-            id: Date.now().toString(),
-            name: templateName,
-            prompt: lastUserMessage.content,
-            model: 'gpt-4o',
-            temperature: 0.7,
-            topP: 1.0
-        });
-        setTemplateName('');
-        alert('Template saved!');
-    };
-
     const copyToClipboard = () => {
         navigator.clipboard.writeText(researchResult);
         setCopied(true);
@@ -181,170 +168,130 @@ export const ResearchForm: React.FC = () => {
     };
 
     return (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[calc(100vh-140px)]">
-            <div className="lg:col-span-2 h-full">
-                <Card className="h-full flex flex-col relative overflow-hidden border-white/10">
-                    {/* Settings Overlay */}
-                    {showSettings && (
-                        <div className="absolute inset-0 z-50 bg-background/95 backdrop-blur-sm p-6 flex flex-col items-center justify-center">
-                            <div className="w-full max-w-md space-y-4">
-                                <h3 className="text-xl font-bold">Settings</h3>
-                                <div className="space-y-2">
-                                    <label className="text-sm font-medium">OpenAI API Key</label>
-                                    <Input
-                                        type="password"
-                                        value={apiKey}
-                                        onChange={(e) => setApiKey(e.target.value)}
-                                        placeholder="sk-..."
-                                    />
-                                </div>
-                                <Button onClick={() => setShowSettings(false)} className="w-full">Save & Close</Button>
+        <div className="h-[calc(100vh-140px)]">
+            <Card className="h-full flex flex-col relative overflow-hidden border-white/10">
+                {/* Settings Overlay */}
+                {showSettings && (
+                    <div className="absolute inset-0 z-50 bg-background/95 backdrop-blur-sm p-6 flex flex-col items-center justify-center">
+                        <div className="w-full max-w-md space-y-4">
+                            <h3 className="text-xl font-bold">Settings</h3>
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">OpenAI API Key</label>
+                                <Input
+                                    type="password"
+                                    value={apiKey}
+                                    onChange={(e) => setApiKey(e.target.value)}
+                                    placeholder="sk-..."
+                                />
                             </div>
+                            <Button onClick={() => setShowSettings(false)} className="w-full">Save & Close</Button>
+                        </div>
+                    </div>
+                )}
+
+                <CardContent className="flex-1 p-0 flex flex-col h-full">
+                    {/* Header */}
+                    <div className="p-4 border-b border-white/5 flex items-center justify-between bg-black/20">
+                        <h2 className="text-lg font-semibold flex items-center gap-2">
+                            {mode === 'chat' ? 'Research Assistant' : 'Deep Research Report'}
+                            {isProcessing && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
+                        </h2>
+                        <div className="flex gap-2">
+                            <input
+                                type="file"
+                                ref={fileInputRef}
+                                className="hidden"
+                                multiple
+                                accept=".pdf,.txt"
+                                onChange={handleFileUpload}
+                            />
+                            <Button variant="outline" size="sm" className="gap-2" onClick={() => fileInputRef.current?.click()}>
+                                <Upload className="w-4 h-4" />
+                                Context ({contextFiles.length})
+                            </Button>
+                            <Button variant="outline" size="sm" className="gap-2" onClick={() => setShowSettings(!showSettings)}>
+                                <Settings className="w-4 h-4" />
+                            </Button>
+                        </div>
+                    </div>
+
+                    {/* Error Banner */}
+                    {error && (
+                        <div className="bg-destructive/20 text-destructive px-4 py-2 text-sm border-b border-destructive/20">
+                            {error}
                         </div>
                     )}
 
-                    <CardContent className="flex-1 p-0 flex flex-col h-full">
-                        {/* Header */}
-                        <div className="p-4 border-b border-white/5 flex items-center justify-between bg-black/20">
-                            <h2 className="text-lg font-semibold flex items-center gap-2">
-                                {mode === 'chat' ? 'Research Assistant' : 'Deep Research Report'}
-                                {isProcessing && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
-                            </h2>
-                            <div className="flex gap-2">
-                                <input
-                                    type="file"
-                                    ref={fileInputRef}
-                                    className="hidden"
-                                    multiple
-                                    accept=".pdf,.txt"
-                                    onChange={handleFileUpload}
-                                />
-                                <Button variant="outline" size="sm" className="gap-2" onClick={() => fileInputRef.current?.click()}>
-                                    <Upload className="w-4 h-4" />
-                                    Context ({contextFiles.length})
-                                </Button>
-                                <Button variant="outline" size="sm" className="gap-2" onClick={() => setShowSettings(!showSettings)}>
-                                    <Settings className="w-4 h-4" />
-                                </Button>
-                            </div>
-                        </div>
-
-                        {/* Error Banner */}
-                        {error && (
-                            <div className="bg-destructive/20 text-destructive px-4 py-2 text-sm border-b border-destructive/20">
-                                {error}
+                    {/* Main Content Area */}
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                        {mode === 'chat' ? (
+                            <>
+                                {messages.length === 0 && (
+                                    <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
+                                        <Play className="w-12 h-12 mb-4" />
+                                        <p>Enter your research topic to begin.</p>
+                                    </div>
+                                )}
+                                {messages.map((msg, i) => (
+                                    <div key={i} className={cn("flex flex-col max-w-[85%]", msg.role === 'user' ? "ml-auto items-end" : "mr-auto items-start")}>
+                                        <div className={cn("px-4 py-3 rounded-2xl text-sm",
+                                            msg.role === 'user'
+                                                ? "bg-primary text-primary-foreground rounded-br-none"
+                                                : "bg-secondary text-secondary-foreground rounded-bl-none"
+                                        )}>
+                                            {msg.content}
+                                        </div>
+                                    </div>
+                                ))}
+                                <div ref={chatEndRef} />
+                            </>
+                        ) : (
+                            <div className="prose prose-invert prose-sm max-w-none whitespace-pre-wrap font-mono text-sm">
+                                {researchResult}
+                                <div ref={chatEndRef} />
                             </div>
                         )}
+                    </div>
 
-                        {/* Main Content Area */}
-                        <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
-                            {mode === 'chat' ? (
-                                <>
-                                    {messages.length === 0 && (
-                                        <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
-                                            <Play className="w-12 h-12 mb-4" />
-                                            <p>Enter your research topic to begin.</p>
-                                        </div>
-                                    )}
-                                    {messages.map((msg, i) => (
-                                        <div key={i} className={cn("flex flex-col max-w-[85%]", msg.role === 'user' ? "ml-auto items-end" : "mr-auto items-start")}>
-                                            <div className={cn("px-4 py-3 rounded-2xl text-sm",
-                                                msg.role === 'user'
-                                                    ? "bg-primary text-primary-foreground rounded-br-none"
-                                                    : "bg-secondary text-secondary-foreground rounded-bl-none"
-                                            )}>
-                                                {msg.content}
-                                            </div>
-                                        </div>
-                                    ))}
-                                    <div ref={chatEndRef} />
-                                </>
-                            ) : (
-                                <div className="prose prose-invert prose-sm max-w-none whitespace-pre-wrap font-mono text-sm">
-                                    {researchResult}
-                                    <div ref={chatEndRef} />
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Input Area */}
-                        <div className="p-4 border-t border-white/5 bg-black/20">
-                            {mode === 'research' ? (
-                                <div className="flex justify-between items-center">
-                                    <span className="text-xs text-muted-foreground animate-pulse">
-                                        {isProcessing ? 'Deep Research in progress (this may take several minutes)...' : 'Deep Research Report complete.'}
-                                    </span>
-                                    <Button variant="secondary" size="sm" onClick={copyToClipboard}>
-                                        {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-                                        Copy Report
-                                    </Button>
-                                </div>
-                            ) : (
-                                <div className="flex gap-2">
-                                    <Textarea
-                                        placeholder="Type your message..."
-                                        className="min-h-[50px] max-h-[150px] resize-none"
-                                        value={input}
-                                        onChange={(e) => setInput(e.target.value)}
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter' && !e.shiftKey) {
-                                                e.preventDefault();
-                                                handleSendMessage();
-                                            }
-                                        }}
-                                    />
-                                    <Button
-                                        size="icon"
-                                        className="h-[50px] w-[50px] shrink-0"
-                                        onClick={handleSendMessage}
-                                        disabled={isProcessing || !input.trim()}
-                                    >
-                                        {isProcessing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-                                    </Button>
-                                </div>
-                            )}
-                        </div>
-                    </CardContent>
-                </Card>
-            </div>
-
-            <div className="space-y-6">
-                <Card className="h-full border-white/10">
-                    <CardContent className="p-6 h-full flex flex-col">
-                        <h3 className="text-sm font-medium mb-4 text-muted-foreground">Saved Templates</h3>
-                        <div className="space-y-2 flex-1 overflow-y-auto">
-                            {templates.length === 0 && (
-                                <p className="text-xs text-muted-foreground italic">No saved templates yet.</p>
-                            )}
-                            {templates.map((t) => (
-                                <Button
-                                    key={t.id}
-                                    variant="ghost"
-                                    className="w-full justify-start text-left font-normal truncate text-xs h-auto py-2"
-                                    onClick={() => setInput(t.prompt)}
-                                >
-                                    {t.name}
-                                </Button>
-                            ))}
-                        </div>
-
-                        <div className="pt-4 border-t border-white/5 mt-4">
-                            <h4 className="text-xs font-medium mb-2 text-muted-foreground">Save Current Prompt</h4>
-                            <div className="flex gap-2">
-                                <Input
-                                    placeholder="Name"
-                                    value={templateName}
-                                    onChange={(e) => setTemplateName(e.target.value)}
-                                    className="h-8 text-xs"
-                                />
-                                <Button variant="secondary" size="sm" onClick={handleSaveTemplate} className="h-8">
-                                    <Save className="w-3 h-3" />
+                    {/* Input Area */}
+                    <div className="p-4 border-t border-white/5 bg-black/20">
+                        {mode === 'research' ? (
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-muted-foreground animate-pulse">
+                                    {isProcessing ? 'Deep Research in progress (this may take several minutes)...' : 'Deep Research Report complete.'}
+                                </span>
+                                <Button variant="secondary" size="sm" onClick={copyToClipboard}>
+                                    {copied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+                                    Copy Report
                                 </Button>
                             </div>
-                        </div>
-                    </CardContent>
-                </Card>
-            </div>
+                        ) : (
+                            <div className="flex gap-2">
+                                <Textarea
+                                    placeholder="Type your message..."
+                                    className="min-h-[50px] max-h-[150px] resize-none"
+                                    value={input}
+                                    onChange={(e) => setInput(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                            e.preventDefault();
+                                            handleSendMessage();
+                                        }
+                                    }}
+                                />
+                                <Button
+                                    size="icon"
+                                    className="h-[50px] w-[50px] shrink-0"
+                                    onClick={handleSendMessage}
+                                    disabled={isProcessing || !input.trim()}
+                                >
+                                    {isProcessing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                                </Button>
+                            </div>
+                        )}
+                    </div>
+                </CardContent>
+            </Card>
         </div>
     );
 };

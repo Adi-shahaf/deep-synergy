@@ -1,4 +1,7 @@
 import React from 'react';
+import { cn } from '../lib/utils';
+import { NavLink } from 'react-router-dom';
+import logoImage from '../assets/logo.png';
 
 interface LayoutProps {
     children: React.ReactNode;
@@ -16,18 +19,28 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
 
             {/* Content Container */}
             <div className="relative z-10 container mx-auto px-4 py-8 max-w-6xl">
-                <header className="mb-12 flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-purple-600 shadow-lg shadow-blue-500/20" />
-                        <h1 className="text-2xl font-bold tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-white to-white/60">
-                            DeepSynergy
-                        </h1>
+                <header className="mb-12 flex items-center">
+                    <div className="flex items-center gap-8">
+                        <div className="flex items-center gap-2">
+                            <img 
+                                src={logoImage} 
+                                alt="DeepSynergy Logo" 
+                                className="w-8 h-8"
+                            />
+                            <h1 className="text-xl font-bold tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-white to-white/60">
+                                DeepSynergy
+                            </h1>
+                        </div>
+
+                        <nav className="flex gap-4">
+                            <NavLink to="/" className={({ isActive }) => cn("text-sm font-medium transition-colors hover:text-primary", isActive ? "text-primary" : "text-muted-foreground")}>
+                                Chat
+                            </NavLink>
+                            <NavLink to="/templates" className={({ isActive }) => cn("text-sm font-medium transition-colors hover:text-primary", isActive ? "text-primary" : "text-muted-foreground")}>
+                                Templates
+                            </NavLink>
+                        </nav>
                     </div>
-                    <nav className="flex space-x-6 text-sm font-medium text-muted-foreground">
-                        <a href="#" className="hover:text-foreground transition-colors">Research</a>
-                        <a href="#" className="hover:text-foreground transition-colors">Templates</a>
-                        <a href="#" className="hover:text-foreground transition-colors">History</a>
-                    </nav>
                 </header>
 
                 <main>
