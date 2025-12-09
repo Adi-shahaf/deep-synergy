@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAppStore } from '../../lib/store';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Textarea } from '../ui/Textarea';
 import { ArrowLeft, ArrowRight, Upload, FileText, Loader2 } from 'lucide-react';
@@ -17,6 +17,7 @@ export const ResearchWizard: React.FC = () => {
 
     const [step, setStep] = useState<1 | 2>(1);
     const [prompt, setPrompt] = useState('');
+    const [systemPrompt, setSystemPrompt] = useState<string | undefined>(undefined);
     const [contextFiles, setContextFiles] = useState<File[]>([]);
     const [contextText, setContextText] = useState('');
     const [vectorStoreId, setVectorStoreId] = useState<string | null>(null);
@@ -32,6 +33,7 @@ export const ResearchWizard: React.FC = () => {
             const template = templates.find(t => t.id === templateId);
             if (template) {
                 setPrompt(template.prompt);
+                setSystemPrompt(template.systemPrompt);
             }
         }
     }, [templateId, templates]);
@@ -86,10 +88,12 @@ export const ResearchWizard: React.FC = () => {
                     <h2 className="text-lg font-semibold">Step 2: Clarification & Research</h2>
                 </div>
                 <ResearchForm 
-                    initialPrompt={prompt} 
+                    initialPrompt={prompt}
+                    initialSystemPrompt={systemPrompt}
                     initialContext={contextText}
                     initialVectorStoreId={vectorStoreId}
                     autoSend={true}
+                    skipChat={true}
                 />
             </div>
         );
@@ -109,7 +113,23 @@ export const ResearchWizard: React.FC = () => {
 
             <Card>
                 <CardHeader>
+                    <CardTitle>System Prompt</CardTitle>
+                    <CardDescription>Defines how the AI should behave (optional)</CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <Textarea
+                        value={systemPrompt || ''}
+                        onChange={(e) => setSystemPrompt(e.target.value || undefined)}
+                        placeholder="Leave empty to use default system prompt..."
+                        className="min-h-[150px] font-mono text-sm"
+                    />
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardHeader>
                     <CardTitle>Research Prompt</CardTitle>
+                    <CardDescription>The research question or topic</CardDescription>
                 </CardHeader>
                 <CardContent>
                     <Textarea

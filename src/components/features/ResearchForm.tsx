@@ -1,15 +1,14 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Textarea } from '../ui/Textarea';
 import { Input } from '../ui/Input';
-import { Upload, Play, Copy, Check, Settings, Send, Loader2 } from 'lucide-react';
+import { Play, Copy, Check, Send, Loader2 } from 'lucide-react';
 import { useAppStore } from '../../lib/store';
-import { sendChat, runDeepResearch, processFilesForResearch, type Message } from '../../lib/openai';
-import { extractTextFromPDF } from '../../lib/file-processing';
+import { sendChat, runDeepResearch, type Message } from '../../lib/openai';
 import { cn } from '../../lib/utils';
 
-const SYSTEM_PROMPT = `You are a Deep Research AI assistant.
+const DEFAULT_SYSTEM_PROMPT = `You are a Deep Research AI assistant.
 Your goal is to provide comprehensive, detailed, and accurate answers based on the user's prompt and provided context.
 
 PROTOCOL:
@@ -24,46 +23,62 @@ Do not output [READY] unless you are absolutely sure you have what you need.
 
 interface ResearchFormProps {
     initialPrompt?: string;
+    initialSystemPrompt?: string;
     initialContext?: string;
     initialVectorStoreId?: string | null;
     autoSend?: boolean;
+    skipChat?: boolean; // Skip chat phase and go directly to deep research
 }
 
 export const ResearchForm: React.FC<ResearchFormProps> = ({ 
     initialPrompt = '', 
+    initialSystemPrompt,
     initialContext = '',
     initialVectorStoreId = null,
-    autoSend = false
+    autoSend = false,
+    skipChat = false
 }) => {
+    const systemPrompt = useMemo(() => initialSystemPrompt || DEFAULT_SYSTEM_PROMPT, [initialSystemPrompt]);
     const { apiKey, setApiKey } = useAppStore();
     const [input, setInput] = useState('');
     const [messages, setMessages] = useState<Message[]>([]);
     const [isProcessing, setIsProcessing] = useState(false);
     const [researchResult, setResearchResult] = useState('');
-    const [contextFiles, setContextFiles] = useState<File[]>([]);
-    const [contextText, setContextText] = useState(initialContext);
-    const [vectorStoreIds, setVectorStoreIds] = useState<string[]>(initialVectorStoreId ? [initialVectorStoreId] : []);
-    const [isProcessingFiles, setIsProcessingFiles] = useState(false);
+    const contextText = useMemo(() => initialContext, [initialContext]);
+    const vectorStoreIds = useMemo(
+        () => (initialVectorStoreId ? [initialVectorStoreId] : []),
+        [initialVectorStoreId]
+    );
     const [showSettings, setShowSettings] = useState(false);
     const [copied, setCopied] = useState(false);
     const [mode, setMode] = useState<'chat' | 'research'>('chat');
     const [error, setError] = useState<string | null>(null);
+    const [researchStartTime, setResearchStartTime] = useState<number | null>(null);
+    const [elapsedTime, setElapsedTime] = useState(0);
+    const [waitingForResearchAnswer, setWaitingForResearchAnswer] = useState(false);
 
-    const fileInputRef = useRef<HTMLInputElement>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
+    const hasAutoSent = useRef(false);
 
-    // Define startDeepResearch first so it can be used in sendMessage
     const startDeepResearch = useCallback(async (history: Message[]) => {
         setIsProcessing(true);
+        setResearchStartTime(Date.now());
+        setElapsedTime(0);
         try {
-            // Consolidate history into a single prompt
-            const researchPrompt = history
+            // Extract system prompt from history
+            const systemMsg = history.find(m => m.role === 'system');
+            const systemPromptText = systemMsg?.content || systemPrompt;
+            
+            // Build research prompt with system prompt included
+            const conversationHistory = history
                 .filter(m => m.role !== 'system')
                 .map(m => `[${m.role.toUpperCase()}]: ${m.content}`)
                 .join('\n\n');
-
-            console.log('Starting deep research with vector stores:', vectorStoreIds);
-            console.log('Research prompt:', researchPrompt.substring(0, 200) + '...');
+            
+            // Combine system prompt with conversation history
+            const researchPrompt = systemPromptText 
+                ? `[SYSTEM INSTRUCTIONS]:\n${systemPromptText}\n\n[CONVERSATION HISTORY]:\n${conversationHistory}`
+                : conversationHistory;
 
             const data = await runDeepResearch({
                 apiKey,
@@ -71,15 +86,54 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
                 vectorStoreIds: vectorStoreIds.length > 0 ? vectorStoreIds : undefined
             });
 
-            console.log('Deep research completed, parsing response:', data);
-
-            // Surface backend failure status explicitly
             if (data.status === 'failed') {
                 const message = data.error?.message || 'Deep research failed';
                 throw new Error(message);
             }
 
-            // Parse the response to find the final message
+            // Check if deep research is asking questions
+            if (data.isQuestion) {
+                let questionText = '';
+                if (data.output && Array.isArray(data.output)) {
+                    const messageItem = data.output.find((item: any) => item.type === 'message');
+                    if (messageItem && messageItem.content) {
+                        if (Array.isArray(messageItem.content)) {
+                            questionText = messageItem.content
+                                .map((part: any) => part.text || part.output_text || '')
+                                .join('');
+                        } else if (typeof messageItem.content === 'string') {
+                            questionText = messageItem.content;
+                        }
+                    }
+
+                    if (!questionText) {
+                        for (const item of data.output) {
+                            if (item.text) {
+                                questionText += item.text + '\n\n';
+                            } else if (item.output_text) {
+                                questionText += item.output_text + '\n\n';
+                            } else if (item.content && typeof item.content === 'string') {
+                                questionText += item.content + '\n\n';
+                            }
+                        }
+                    }
+                } else if (data.output_text) {
+                    questionText = data.output_text;
+                } else if (data.text) {
+                    questionText = data.text;
+                }
+
+                if (questionText && questionText.trim()) {
+                    // Display questions in chat mode and wait for user response
+                    setMode('chat');
+                    setWaitingForResearchAnswer(true);
+                    setMessages(prev => [...prev, { role: 'assistant', content: questionText }]);
+                    setIsProcessing(false);
+                    setResearchStartTime(null);
+                    return; // Exit early, wait for user to respond
+                }
+            }
+
             let finalText = '';
             if (data.output && Array.isArray(data.output)) {
                 const messageItem = data.output.find((item: any) => item.type === 'message');
@@ -92,14 +146,13 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
                         finalText = messageItem.content;
                     }
                 }
-                
-                // If no message item found, try to get text from any output item
+
                 if (!finalText) {
                     for (const item of data.output) {
-                            if (item.text) {
+                        if (item.text) {
                             finalText += item.text + '\n\n';
-                            } else if (item.output_text) {
-                                finalText += item.output_text + '\n\n';
+                        } else if (item.output_text) {
+                            finalText += item.output_text + '\n\n';
                         } else if (item.content && typeof item.content === 'string') {
                             finalText += item.content + '\n\n';
                         }
@@ -110,7 +163,6 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
             } else if (data.text) {
                 finalText = data.text;
             } else {
-                console.warn('Unexpected response structure, showing raw data:', data);
                 finalText = JSON.stringify(data, null, 2);
             }
 
@@ -122,13 +174,13 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
         } catch (err: any) {
             console.error('Deep research error:', err);
             setError(err.message || 'Failed to generate research report. Please try again.');
-            setResearchResult(''); // Clear any partial results
+            setResearchResult('');
         } finally {
             setIsProcessing(false);
+            setResearchStartTime(null);
         }
-    }, [apiKey, vectorStoreIds]);
+    }, [apiKey, vectorStoreIds, systemPrompt]);
 
-    // Extract send logic to a reusable function
     const sendMessage = useCallback(async (messageContent: string, isFirstMessage: boolean = false) => {
         if (!apiKey) {
             setError('Please set your OpenAI API Key in settings first.');
@@ -139,22 +191,29 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
 
         const userMsg: Message = { role: 'user', content: messageContent };
 
-        // If it's the first message, append context
         if (isFirstMessage && contextText) {
             userMsg.content += `\n\n[CONTEXT FILES ATTACHED]:\n${contextText}`;
         }
 
         const newMessages = [...messages, userMsg];
         setMessages(newMessages);
-        setInput(''); // Always clear input after sending
+        setInput('');
         setIsProcessing(true);
         setError(null);
 
         try {
             const fullHistory: Message[] = [
-                { role: 'system', content: SYSTEM_PROMPT },
+                { role: 'system', content: systemPrompt },
                 ...newMessages
             ];
+
+            // If we're waiting for a deep research answer, continue deep research instead of using chat
+            if (waitingForResearchAnswer) {
+                setWaitingForResearchAnswer(false);
+                setMode('research');
+                await startDeepResearch(fullHistory);
+                return;
+            }
 
             const response = await sendChat({
                 apiKey,
@@ -175,77 +234,63 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
         } finally {
             setIsProcessing(false);
         }
-    }, [apiKey, messages, contextText, autoSend, startDeepResearch]);
+    }, [apiKey, messages, contextText, startDeepResearch, systemPrompt, waitingForResearchAnswer]);
 
-    // Auto-send initial prompt if autoSend is true
-    const hasAutoSent = useRef(false);
     useEffect(() => {
         if (autoSend && initialPrompt && !isProcessing && messages.length === 0 && apiKey && !hasAutoSent.current) {
-            // Small delay to ensure component is fully mounted and vector stores are ready
             const timer = setTimeout(() => {
                 if (initialPrompt.trim() && !hasAutoSent.current) {
                     hasAutoSent.current = true;
-                    sendMessage(initialPrompt, true);
+                    
+                    // If skipChat is true, go directly to deep research
+                    if (skipChat) {
+                        setMode('research');
+                        const userMsg: Message = { role: 'user', content: initialPrompt };
+                        if (contextText) {
+                            userMsg.content += `\n\n[CONTEXT FILES ATTACHED]:\n${contextText}`;
+                        }
+                        const history: Message[] = [
+                            { role: 'system', content: systemPrompt },
+                            userMsg
+                        ];
+                        setMessages([userMsg]);
+                        startDeepResearch(history).catch((err: any) => {
+                            console.error('Deep research error:', err);
+                            setError(err.message || 'Failed to generate research report. Please try again.');
+                            setIsProcessing(false);
+                        });
+                    } else {
+                        sendMessage(initialPrompt, true);
+                    }
                 }
             }, 500);
             return () => clearTimeout(timer);
         }
-    }, [autoSend, initialPrompt, apiKey, isProcessing, messages.length, sendMessage]);
+    }, [autoSend, initialPrompt, apiKey, isProcessing, messages.length, sendMessage, skipChat, contextText, systemPrompt, startDeepResearch]);
 
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, researchResult, mode]);
 
-    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files.length > 0) {
-            if (!apiKey) {
-                setError('Please set your OpenAI API Key in settings first.');
-                setShowSettings(true);
-                return;
-            }
-
-            const files = Array.from(e.target.files);
-            setContextFiles(prev => [...prev, ...files]);
-            setIsProcessingFiles(true);
-            setError(null);
-
-            try {
-                // Process files and create vector store
-                console.log('Starting file upload to vector store...');
-                const vsId = await processFilesForResearch(apiKey, files);
-                if (vsId) {
-                    console.log('✓ Vector store created:', vsId);
-                    setVectorStoreIds(prev => {
-                        // Keep max 2 vector stores (API limit)
-                        const updated = [...prev, vsId];
-                        return updated.slice(-2);
-                    });
-                    // Show success message
-                    setError(null);
-                } else {
-                    throw new Error('Failed to create vector store');
-                }
-
-                // Also extract text for display/fallback (optional, doesn't block upload)
-                for (const file of files) {
-                    if (file.type === 'application/pdf') {
-                        try {
-                            const text = await extractTextFromPDF(file);
-                            setContextText(prev => prev + `\n\n--- File: ${file.name} ---\n${text}`);
-                            console.log(`✓ Extracted text from ${file.name}`);
-                        } catch (error) {
-                            console.warn(`⚠ Failed to extract text from ${file.name} (file still uploaded to vector store):`, error);
-                            // Don't set error here, vector store upload succeeded
-                        }
-                    }
-                }
-            } catch (error: any) {
-                console.error('File upload error:', error);
-                setError(`Failed to upload files: ${error.message}`);
-            } finally {
-                setIsProcessingFiles(false);
-            }
+    // Timer effect for deep research
+    useEffect(() => {
+        if (!researchStartTime || !isProcessing) {
+            return;
         }
+
+        const interval = setInterval(() => {
+            const elapsed = Math.floor((Date.now() - researchStartTime) / 1000);
+            setElapsedTime(elapsed);
+        }, 1000);
+
+        return () => clearInterval(interval);
+    }, [researchStartTime, isProcessing]);
+
+    // Format elapsed time as MM:SS
+    const formatTime = (seconds: number): string => {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
 
     const handleSendMessage = async () => {
@@ -325,6 +370,11 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
                                         <Loader2 className="w-8 h-8 animate-spin text-primary mb-4" />
                                         <p className="text-muted-foreground">Deep Research in progress...</p>
                                         <p className="text-xs text-muted-foreground mt-2">This may take several minutes</p>
+                                        {researchStartTime && (
+                                            <p className="text-xs text-muted-foreground/70 mt-1 font-mono">
+                                                {formatTime(elapsedTime)}
+                                            </p>
+                                        )}
                                     </div>
                                 ) : researchResult ? (
                                     <>
@@ -347,6 +397,11 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
                                     <span className="text-xs text-muted-foreground">
                                         {isProcessing ? 'Deep Research in progress (this may take several minutes)...' : 'Deep Research Report complete.'}
                                     </span>
+                                    {isProcessing && researchStartTime && (
+                                        <span className="text-xs text-muted-foreground/70 font-mono ml-2">
+                                            {formatTime(elapsedTime)}
+                                        </span>
+                                    )}
                                 </div>
                                 {!isProcessing && researchResult && (
                                     <Button variant="secondary" size="sm" onClick={copyToClipboard}>

@@ -215,11 +215,10 @@ export async function processFilesForResearch(
 /**
  * Polls for the result of a background deep research request
  */
-async function pollForResult(apiKey: string, responseId: string, maxWaitTime: number = 600000): Promise<any> {
-    const startTime = Date.now();
+async function pollForResult(apiKey: string, responseId: string): Promise<any> {
     const pollInterval = 3000; // Check every 3 seconds
     
-    while (Date.now() - startTime < maxWaitTime) {
+    while (true) {
         try {
             const response = await fetch(`https://api.openai.com/v1/responses/${responseId}`, {
                 headers: {
@@ -228,12 +227,21 @@ async function pollForResult(apiKey: string, responseId: string, maxWaitTime: nu
             });
             
             if (!response.ok) {
+                // Handle rate limit errors during polling
+                if (response.status === 429) {
+                    const errorData = await response.json().catch(() => ({}));
+                    const retryAfter = errorData.error?.retry_after || 5; // Default to 5 seconds
+                    const waitSeconds = typeof retryAfter === 'string' ? parseFloat(retryAfter) : retryAfter;
+                    console.log(`Rate limit during polling. Waiting ${waitSeconds} seconds...`);
+                    await new Promise(resolve => setTimeout(resolve, waitSeconds * 1000));
+                    continue; // Retry the poll
+                }
                 throw new Error(`Failed to poll response: ${response.statusText}`);
             }
             
             const data = await response.json();
             const status = data.status;
-            console.log(`Polling attempt - Status: ${status}, Has output: ${!!data.output}, Has output_text: ${!!data.output_text}`);
+            console.log(`Polling attempt - Status: ${status}, Has output: ${!!data.output}, Has output_text: ${!!data.output_text}`, data);
 
             // Surface failures immediately before returning any output
             if (status === 'failed' || data.error) {
@@ -241,15 +249,90 @@ async function pollForResult(apiKey: string, responseId: string, maxWaitTime: nu
                 throw new Error(message);
             }
             
-            // Check if the response is complete - check for output first
-            if (data.output && Array.isArray(data.output) && data.output.length > 0) {
+            // Check if deep research is asking questions (needs user input)
+            // Check this FIRST before checking for completion
+            if (status === 'needs_input' || data.needs_input || data.status === 'needs_input') {
+                console.log('Deep research needs input/questions (status check)');
+                return { ...data, isQuestion: true };
+            }
+            
+            // Helper function to check if text contains questions
+            const containsQuestions = (text: string): boolean => {
+                if (!text) return false;
+                const trimmed = text.trim();
+                // If response is very short (< 500 chars), it's likely a question, not a full research report
+                if (trimmed.length < 500) {
+                    // Look for question patterns: ends with ?, contains question words
+                    const questionPatterns = /[?]|(what|how|when|where|why|which|who|can you|could you|would you|please)\s+/i;
+                    if (questionPatterns.test(trimmed)) {
+                        return true;
+                    }
+                }
+                // For longer text, check if it ends with a question mark or contains multiple questions
+                const questionCount = (trimmed.match(/\?/g) || []).length;
+                if (questionCount > 0 && trimmed.length < 2000) {
+                    return true; // Likely questions if it has ? and is relatively short
+                }
+                return false;
+            };
+            
+            // Check for questions in output BEFORE checking completion status
+            let questionText = '';
+            
+            if (data.output && Array.isArray(data.output)) {
                 console.log('Found output array with', data.output.length, 'items');
-                return data;
+                // Extract text from output to check for questions
+                for (const item of data.output) {
+                    if (item.type === 'message' && item.content) {
+                        if (Array.isArray(item.content)) {
+                            const text = item.content
+                                .map((part: any) => part.text || part.output_text || '')
+                                .join('');
+                            if (containsQuestions(text)) {
+                                questionText = text;
+                                break;
+                            }
+                        } else if (typeof item.content === 'string' && containsQuestions(item.content)) {
+                            questionText = item.content;
+                            break;
+                        }
+                    } else if (item.text && containsQuestions(item.text)) {
+                        questionText = item.text;
+                        break;
+                    }
+                }
+                
+                // If we found questions, return as question (even if status says completed, 
+                // it might be a quick completion with questions)
+                if (questionText) {
+                    // Double-check: if it's very short and contains questions, it's likely a question
+                    // If it's long (> 2000 chars), it's probably a research report
+                    if (questionText.length < 2000) {
+                        console.log('Found questions in output array, returning for user input');
+                        return { ...data, isQuestion: true, questionText };
+                    }
+                }
+                
+                // If status is completed and no questions found, return the final result
+                if (status === 'completed') {
+                    return data;
+                }
             }
             
             if (data.output_text) {
-                console.log('Found output_text');
-                return data;
+                console.log('Found output_text:', data.output_text.substring(0, 200));
+                // Check if output_text contains questions
+                if (containsQuestions(data.output_text)) {
+                    // If it's short and has questions, treat as question even if status is completed
+                    if (data.output_text.length < 2000) {
+                        console.log('Output text contains questions (short response), returning for user input');
+                        return { ...data, isQuestion: true, questionText: data.output_text };
+                    }
+                }
+                // If completed and long (research report), return final result
+                if (status === 'completed' && data.output_text.length >= 2000) {
+                    return data;
+                }
             }
             
             // Check status
@@ -287,8 +370,6 @@ async function pollForResult(apiKey: string, responseId: string, maxWaitTime: nu
             throw error;
         }
     }
-    
-    throw new Error('Deep research timed out after 10 minutes');
 }
 
 export async function runDeepResearch(params: { 
@@ -326,7 +407,7 @@ export async function runDeepResearch(params: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: 'o3-deep-research',
+                model: 'o4-mini-deep-research',
                 input: finalPrompt,
                 background: true,
                 tools
@@ -335,11 +416,67 @@ export async function runDeepResearch(params: {
 
         if (!response.ok) {
             const errorData = await response.json();
-            throw new Error(errorData.error?.message || 'Failed to run deep research');
+            const errorMessage = errorData.error?.message || 'Failed to run deep research';
+            
+            // Handle rate limit errors with retry
+            if (response.status === 429) {
+                const retryAfter = errorData.error?.retry_after || errorMessage.match(/try again in ([\d.]+)s/)?.[1];
+                if (retryAfter) {
+                    const waitSeconds = parseFloat(retryAfter);
+                    console.log(`Rate limit reached. Waiting ${waitSeconds} seconds before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, waitSeconds * 1000));
+                    // Retry once after waiting
+                    return runDeepResearch(params);
+                }
+            }
+            
+            throw new Error(errorMessage);
         }
 
         const data = await response.json();
         console.log('Initial deep research response:', data);
+
+        // Check if initial response contains questions (before polling)
+        const containsQuestions = (text: string): boolean => {
+            if (!text) return false;
+            const trimmed = text.trim();
+            if (trimmed.length < 500) {
+                const questionPatterns = /[?]|(what|how|when|where|why|which|who|can you|could you|would you|please)\s+/i;
+                if (questionPatterns.test(trimmed)) {
+                    return true;
+                }
+            }
+            const questionCount = (trimmed.match(/\?/g) || []).length;
+            if (questionCount > 0 && trimmed.length < 2000) {
+                return true;
+            }
+            return false;
+        };
+
+        // Check for questions in initial response
+        if (data.output_text && containsQuestions(data.output_text) && data.output_text.length < 2000) {
+            console.log('Initial response contains questions');
+            return { ...data, isQuestion: true, questionText: data.output_text };
+        }
+
+        if (data.output && Array.isArray(data.output)) {
+            for (const item of data.output) {
+                let text = '';
+                if (item.type === 'message' && item.content) {
+                    if (Array.isArray(item.content)) {
+                        text = item.content.map((part: any) => part.text || part.output_text || '').join('');
+                    } else if (typeof item.content === 'string') {
+                        text = item.content;
+                    }
+                } else if (item.text) {
+                    text = item.text;
+                }
+                if (text && containsQuestions(text) && text.length < 2000) {
+                    console.log('Initial response contains questions in output');
+                    return { ...data, isQuestion: true, questionText: text };
+                }
+            }
+        }
 
         // If background mode, poll for the result
         if (data.id) {

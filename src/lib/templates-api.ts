@@ -11,6 +11,7 @@ export const fetchTemplates = async (): Promise<Template[]> => {
         return {
             id: docSnapshot.id,
             name: data.name ?? '',
+            systemPrompt: data.systemPrompt,
             prompt: data.prompt ?? '',
             model: data.model ?? '',
             temperature: data.temperature ?? 1,
