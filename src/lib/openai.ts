@@ -232,7 +232,14 @@ async function pollForResult(apiKey: string, responseId: string, maxWaitTime: nu
             }
             
             const data = await response.json();
-            console.log(`Polling attempt - Status: ${data.status}, Has output: ${!!data.output}, Has output_text: ${!!data.output_text}`);
+            const status = data.status;
+            console.log(`Polling attempt - Status: ${status}, Has output: ${!!data.output}, Has output_text: ${!!data.output_text}`);
+
+            // Surface failures immediately before returning any output
+            if (status === 'failed' || data.error) {
+                const message = data.error?.message || 'Deep research failed';
+                throw new Error(message);
+            }
             
             // Check if the response is complete - check for output first
             if (data.output && Array.isArray(data.output) && data.output.length > 0) {
@@ -246,7 +253,7 @@ async function pollForResult(apiKey: string, responseId: string, maxWaitTime: nu
             }
             
             // Check status
-            if (data.status === 'completed') {
+            if (status === 'completed') {
                 console.log('Status is completed');
                 // Even if status is completed, check if we have output
                 if (!data.output && !data.output_text) {
@@ -258,15 +265,10 @@ async function pollForResult(apiKey: string, responseId: string, maxWaitTime: nu
             }
             
             // If it's still processing, wait and try again
-            if (data.status === 'processing' || data.status === 'pending' || !data.status) {
+            if (status === 'processing' || status === 'pending' || status === 'queued' || status === 'in_progress' || !status) {
                 console.log('Still processing, waiting...');
                 await new Promise(resolve => setTimeout(resolve, pollInterval));
                 continue;
-            }
-            
-            // If there's an error status
-            if (data.status === 'failed' || data.error) {
-                throw new Error(data.error?.message || 'Deep research failed');
             }
             
             // Default: wait and try again

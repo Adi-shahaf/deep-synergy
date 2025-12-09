@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -8,25 +8,50 @@ import { useAppStore } from '../../lib/store';
 import { useNavigate } from 'react-router-dom';
 
 export const TemplatesPage: React.FC = () => {
-    const { templates, addTemplate, removeTemplate } = useAppStore();
+    const { templates, addTemplate, removeTemplate, loadTemplates } = useAppStore();
     const navigate = useNavigate();
     const [isAdding, setIsAdding] = useState(false);
     const [newTemplateName, setNewTemplateName] = useState('');
     const [newTemplatePrompt, setNewTemplatePrompt] = useState('');
+    const [isSaving, setIsSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
-    const handleAddTemplate = () => {
+    useEffect(() => {
+        void loadTemplates();
+    }, [loadTemplates]);
+
+    const handleAddTemplate = async () => {
         if (!newTemplateName || !newTemplatePrompt) return;
-        addTemplate({
-            id: Date.now().toString(),
-            name: newTemplateName,
-            prompt: newTemplatePrompt,
-            model: 'o3-deep-research',
-            temperature: 1,
-            topP: 1
-        });
-        setNewTemplateName('');
-        setNewTemplatePrompt('');
-        setIsAdding(false);
+        setIsSaving(true);
+        setError(null);
+        try {
+            await addTemplate({
+                id: Date.now().toString(),
+                name: newTemplateName,
+                prompt: newTemplatePrompt,
+                model: 'o3-deep-research',
+                temperature: 1,
+                topP: 1
+            });
+            setNewTemplateName('');
+            setNewTemplatePrompt('');
+            setIsAdding(false);
+        } catch (e) {
+            console.error(e);
+            setError('Failed to save template. Please try again.');
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const handleRemoveTemplate = async (id: string) => {
+        setError(null);
+        try {
+            await removeTemplate(id);
+        } catch (e) {
+            console.error(e);
+            setError('Failed to remove template. Please try again.');
+        }
     };
 
     return (
@@ -37,6 +62,12 @@ export const TemplatesPage: React.FC = () => {
                     <Plus className="w-4 h-4" /> New Template
                 </Button>
             </div>
+
+            {error && (
+                <div className="bg-destructive/10 border border-destructive/30 text-destructive text-sm rounded-lg px-4 py-3">
+                    {error}
+                </div>
+            )}
 
             {isAdding && (
                 <Card className="border-primary/50 animate-in fade-in slide-in-from-top-4">
@@ -64,7 +95,9 @@ export const TemplatesPage: React.FC = () => {
                         </div>
                         <div className="flex justify-end gap-2">
                             <Button variant="ghost" onClick={() => setIsAdding(false)}>Cancel</Button>
-                            <Button onClick={handleAddTemplate}>Save Template</Button>
+                            <Button onClick={handleAddTemplate} disabled={isSaving}>
+                                {isSaving ? 'Saving...' : 'Save Template'}
+                            </Button>
                         </div>
                     </CardContent>
                 </Card>
@@ -85,7 +118,7 @@ export const TemplatesPage: React.FC = () => {
                                     variant="ghost"
                                     size="icon"
                                     className="opacity-0 group-hover:opacity-100 text-destructive hover:text-destructive hover:bg-destructive/10"
-                                    onClick={() => removeTemplate(template.id)}
+                                    onClick={() => handleRemoveTemplate(template.id)}
                                 >
                                     <Trash2 className="w-4 h-4" />
                                 </Button>

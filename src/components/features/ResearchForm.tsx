@@ -73,6 +73,12 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
 
             console.log('Deep research completed, parsing response:', data);
 
+            // Surface backend failure status explicitly
+            if (data.status === 'failed') {
+                const message = data.error?.message || 'Deep research failed';
+                throw new Error(message);
+            }
+
             // Parse the response to find the final message
             let finalText = '';
             if (data.output && Array.isArray(data.output)) {
@@ -90,8 +96,10 @@ export const ResearchForm: React.FC<ResearchFormProps> = ({
                 // If no message item found, try to get text from any output item
                 if (!finalText) {
                     for (const item of data.output) {
-                        if (item.text) {
+                            if (item.text) {
                             finalText += item.text + '\n\n';
+                            } else if (item.output_text) {
+                                finalText += item.output_text + '\n\n';
                         } else if (item.content && typeof item.content === 'string') {
                             finalText += item.content + '\n\n';
                         }

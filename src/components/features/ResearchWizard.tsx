@@ -12,7 +12,7 @@ import { ResearchForm } from './ResearchForm';
 
 export const ResearchWizard: React.FC = () => {
     const { templateId } = useParams();
-    const { templates, apiKey } = useAppStore();
+    const { templates, apiKey, loadTemplates } = useAppStore();
     const navigate = useNavigate();
 
     const [step, setStep] = useState<1 | 2>(1);
@@ -22,6 +22,10 @@ export const ResearchWizard: React.FC = () => {
     const [vectorStoreId, setVectorStoreId] = useState<string | null>(null);
     const [isProcessingFiles, setIsProcessingFiles] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => {
+        void loadTemplates();
+    }, [loadTemplates]);
 
     useEffect(() => {
         if (templateId) {
